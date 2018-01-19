@@ -1,0 +1,311 @@
+#!/bin/bash
+
+#
+# Copyright (c) 2017 Mellanox Technologies. All rights reserved.
+#
+# This Software is licensed under one of the following licenses:
+#
+# 1) under the terms of the "Common Public License 1.0" a copy of which is
+#    available from the Open Source Initiative, see
+#    http://www.opensource.org/licenses/cpl.php.
+#
+# 2) under the terms of the "The BSD License" a copy of which is
+#    available from the Open Source Initiative, see
+#    http://www.opensource.org/licenses/bsd-license.php.
+#
+# 3) under the terms of the "GNU General Public License (GPL) Version 2" a
+#    copy of which is available from the Open Source Initiative, see
+#    http://www.opensource.org/licenses/gpl-license.php.
+#
+# Licensee has the right to choose one of the above licenses.
+#
+# Redistributions of source code must retain the above copyright
+# notice and one of the license notices.
+#
+# Redistributions in binary form must reproduce both the above copyright
+# notice, one of the license notices in the documentation
+# and/or other materials provided with the distribution.
+#
+
+VALID_CMDS=(enable_sriov disable_sriov list_netdevs netdev2uverb netdev2mac run)
+in_cmd=" "
+full_cmd=$@
+echo $full_cmd
+
+function usage_help()
+{
+	echo "$(basename $0) <options>"
+	echo "-h, --help    	print help message"
+	echo "run --netdev=vf_netdevice <other_arguments>		Run docker container with given VF netdevice"
+	echo "enable_sriov <netdevice>		Enable SRIOV on PF network device"
+	echo "disable_sriov <netdevice>		Disable SRIOV on PF network device"
+	echo "list_netdevs <netdevice>		List netdevices of PF netdev"
+	echo "netdev2uverb <netdevice>		Show IB uverbs device file for netdevice"
+	echo "netdev2mac <netdevice>		Show MAC address of the VF netdevice"
+}
+
+valid_cmd=""
+
+function validate_input_cmd()
+{
+	in_cmd=$1
+	for n in "${VALID_CMDS[@]}"; do
+		if [ "$in_cmd" = "$n" ]; then
+			valid_cmd=$in_cmd
+		fi
+	done
+
+	if [ -z $valid_cmd ]; then
+		echo "Given command $in_cmd is invalid"
+		usage_help
+		exit 1
+	fi
+}
+
+function check_pf_device_exist()
+{
+	eth_dev=$1
+
+	if [ ! -f /sys/class/net/$eth_dev/device/sriov_totalvfs ]; then
+		echo "Invalid PF eth device $eth_dev"
+		exit 1
+	fi
+}
+
+function check_netdev_exist()
+{
+	eth_dev=$1
+
+	if [ ! -f /sys/class/net/$eth_dev/ifindex ]; then
+		echo "Invalid eth device $eth_dev"
+		exit 1
+	fi
+}
+
+function enable_sriov()
+{
+	eth_dev=$1
+
+	check_pf_device_exist $eth_dev
+	max_vfs=$(cat /sys/class/net/$eth_dev/device/sriov_totalvfs)
+
+	if [ $max_vfs -eq 0 ]; then 
+		echo "SRIOV is disabled for eth device $eth_dev"
+		echo "Please enable from BIOS"
+		exit 1
+	fi
+	cur_vfs=$(cat /sys/class/net/$eth_dev/device/sriov_numvfs)
+	if [ $max_vfs -eq $cur_vfs ]; then
+		echo "SRIOV is already enabled for eth device $eth_dev"
+		return
+	fi
+	echo $max_vfs > /sys/class/net/$eth_dev/device/sriov_numvfs
+	cur_vfs=$(cat /sys/class/net/$eth_dev/device/sriov_numvfs)
+	if [ $max_vfs -ne $cur_vfs ]; then
+		echo "Fail to enable SRIOV for eth device $eth_dev"
+		exit 1
+	fi
+}
+
+function disable_sriov()
+{
+	eth_dev=$1
+
+	check_pf_device_exist $eth_dev
+	cur_vfs=$(cat /sys/class/net/$eth_dev/device/sriov_numvfs)
+	if [ $cur_vfs -eq 0 ]; then
+		echo "SRIOV already disabled for eth device $eth_dev"
+		return
+	fi
+	echo 0 > /sys/class/net/$eth_dev/device/sriov_numvfs
+}
+
+function list_netdevs()
+{
+	vf_list=()
+	eth_dev=$1
+
+	check_pf_device_exist $1
+
+	cur_vfs=$(cat /sys/class/net/$eth_dev/device/sriov_numvfs)
+	for (( i=0; i<$cur_vfs; i++))
+	do
+		vf_netdev=$(ls /sys/class/net/$eth_dev/device/virtfn$i/net)
+		vf_list+=("$vf_netdev")
+	done
+	echo "${vf_list[@]}"
+}
+
+function netdev2uverb()
+{
+	eth_dev=$1
+	found_ibdev=""
+	ibdevs=$(ls /sys/class/infiniband/)
+	abs_uverb_file=""
+
+	for ibdev in $ibdevs; do
+		ports=$(ls /sys/class/infiniband/$ibdev/ports/)
+		for port in $ports; do
+			#rely on the default GID!
+			#ndev_list=$(ls /sys/class/infiniband/$ibdev/ports/$port/gid_attrs/ndevs)
+			#for ndev in $ndev_list; do
+				ndev_read=$(cat /sys/class/infiniband/$ibdev/ports/$port/gid_attrs/ndevs/0 2> /dev/null)
+				if [ -z $ndev_read ]; then
+					continue
+				fi
+				if [ "$eth_dev" = "$ndev_read" ]; then
+					found_ibdev=$ibdev
+					break
+				fi
+			#done
+		done
+	done
+	if [ -z $found_ibdev ]; then
+		echo "No matching IB device found for eth device $eth_dev"
+		return
+	fi
+	#matching IB device for this netdev found.
+	#now lets search its matching uverbs0 file.
+	uverbs_list=$(ls /sys/class/infiniband_verbs/)
+
+	for uverb_file in $uverbs_list; do
+		if [ "$uverb_file" = "abi_version" ]; then
+			continue
+		fi
+
+		uverb_ibdev_name=$(cat /sys/class/infiniband_verbs/$uverb_file/ibdev)
+		if [ "$found_ibdev" = "$uverb_ibdev_name" ]; then
+			abs_uverb_file=/dev/infiniband/$uverb_file
+			echo $abs_uverb_file
+			break
+		fi
+	done
+}
+
+function netdev2mac()
+{
+	eth_dev=$1
+
+	check_netdev_exist $eth_dev
+	mac_addr_str=$(ip link show $eth_dev | grep ether)
+
+	#it is in format of link/ether de:9b:dc:ac:a8:5b brd ff:ff:ff:ff:ff:ff
+	#retain string after link/ether 
+	mac_addr_str=${mac_addr_str##*ether}
+	#retain string before brd
+	mac_addr_str=${mac_addr_str%brd*}
+	echo $mac_addr_str
+}
+
+function do_docker_run()
+{
+	declare -a ARGS
+	i=0
+	extra_mac_addr_cmd="--mac-address="$1
+	extra_char_dev_cmd="--device="$2
+
+	ARGS[${#ARGS[@]}]="$extra_mac_addr_cmd"
+	ARGS[${#ARGS[@]}]="$extra_char_dev_cmd"
+
+	for var in $full_cmd; do
+		## ignore the run and netdev arguments
+		i=$((i+1))
+		if [ $i -lt 3 ]; then
+			continue
+		fi
+		ARGS[${#ARGS[@]}]="$var"
+	done
+	#echo "${ARGS[@]}"
+	docker run "${ARGS[@]}"
+}
+
+function execute_input_cmd()
+{
+	case "$1" in
+	"enable_sriov")
+		eth_dev=$2
+		if [ -z $eth_dev ]; then
+			echo "Missing netdevice"
+			echo "Valid command example: $0 enable_sriov <ethX>"
+			exit 1
+		fi
+		echo "Enabling SRIOV on eth device: $eth_dev"
+		enable_sriov $eth_dev
+	;;
+	"disable_sriov")
+		eth_dev=$2
+		if [ -z $eth_dev ]; then
+			echo "Missing netdevice"
+			echo "Valid command example: $0 enable_sriov <ethX>"
+			exit 1
+		fi
+		echo "Disabling SRIOV on eth device: $eth_dev"
+		disable_sriov $eth_dev
+	;;
+	"list_netdevs")
+		eth_dev=$2
+		if [ -z $eth_dev ]; then
+			echo "Missing netdevice"
+			echo "Valid command example: $0 list_netdevs <ethX>"
+			exit 1
+		fi
+		list_netdevs $eth_dev
+	;;
+	"netdev2uverb")
+		eth_dev=$2
+		if [ -z $eth_dev ]; then
+			echo "Missing netdevice"
+			echo "Valid command example: $0 netdev2uverb <ethX>"
+			exit 1
+		fi
+		netdev2uverb $eth_dev
+	;;
+	"netdev2mac")
+		eth_dev=$2
+		if [ -z $eth_dev ]; then
+			echo "Missing netdevice"
+			echo "Valid command example: $0 netdev2mac <ethX>"
+			exit 1
+		fi
+		netdev2mac $eth_dev
+	;;
+	"run")
+		#docker_mgmt run --netdev=ethX
+		eth_dev=$2
+		eth_dev=${eth_dev##*=}
+		if [ -z $eth_dev ]; then
+			echo "Missing netdevice"
+			echo "Valid command example: $0 run --netdev=<ethX>"
+			exit 1
+		fi
+		netdev2mac $eth_dev
+		netdev2uverb $eth_dev
+		if [ -z $mac_addr_str ]; then
+			echo "Mac address not found"
+			exit 1
+		fi
+		if [ -z $abs_uverb_file ]; then
+			echo "Uverbs char device file not found"
+			exit 1
+		fi
+		do_docker_run $mac_addr_str $abs_uverb_file
+	;;
+
+	esac
+}
+
+function check_for_help()
+{
+	case $1 in
+	        "-h" | "--help")
+	                usage_help
+	                exit 0
+	                ;;
+	esac
+}
+
+check_for_help $1
+
+validate_input_cmd $1
+
+execute_input_cmd $full_cmd
