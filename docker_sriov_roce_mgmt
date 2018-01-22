@@ -200,12 +200,14 @@ function do_docker_run()
 {
 	declare -a ARGS
 	i=0
-	extra_mac_addr_cmd="--mac-address="$1
-	extra_char_dev_cmd="--device=/dev/infiniband/rdma_cm --device="$2
-	extra_cap_ipc="--cap-add=IPC_LOCK "
+	extra_mac_addr_cmd="--mac-address=$1"
+	extra_char_dev_cmd="--device=$2"
+	extra_rdma_cm_dev="--device=/dev/infiniband/rdma_cm"
+	extra_cap_ipc="--cap-add=IPC_LOCK"
 
-	ARGS[${#ARGS[@]}]="$extra_mac_addr_cmd"
 	ARGS[${#ARGS[@]}]="$extra_char_dev_cmd"
+	ARGS[${#ARGS[@]}]="$extra_rdma_cm_dev"
+	ARGS[${#ARGS[@]}]="$extra_mac_addr_cmd"
 	ARGS[${#ARGS[@]}]="$extra_cap_ipc"
 
 	for var in $full_cmd; do
