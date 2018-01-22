@@ -202,9 +202,11 @@ function do_docker_run()
 	i=0
 	extra_mac_addr_cmd="--mac-address="$1
 	extra_char_dev_cmd="--device=/dev/infiniband/rdma_cm --device="$2
+	extra_cap_ipc="--cap-add=IPC_LOCK "
 
 	ARGS[${#ARGS[@]}]="$extra_mac_addr_cmd"
 	ARGS[${#ARGS[@]}]="$extra_char_dev_cmd"
+	ARGS[${#ARGS[@]}]="$extra_cap_ipc"
 
 	for var in $full_cmd; do
 		## ignore the run and netdev arguments
@@ -214,7 +216,6 @@ function do_docker_run()
 		fi
 		ARGS[${#ARGS[@]}]="$var"
 	done
-	#echo "${ARGS[@]}"
 	docker run "${ARGS[@]}"
 }
 
