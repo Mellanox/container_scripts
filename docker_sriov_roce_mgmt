@@ -186,13 +186,7 @@ function netdev2mac()
 	eth_dev=$1
 
 	check_netdev_exist $eth_dev
-	mac_addr_str=$(ip link show $eth_dev | grep ether)
-
-	#it is in format of link/ether de:9b:dc:ac:a8:5b brd ff:ff:ff:ff:ff:ff
-	#retain string after link/ether 
-	mac_addr_str=${mac_addr_str##*ether}
-	#retain string before brd
-	mac_addr_str=${mac_addr_str%brd*}
+	mac_addr_str=$(cat /sys/class/net/$eth_dev/address)
 	echo $mac_addr_str
 }
 
